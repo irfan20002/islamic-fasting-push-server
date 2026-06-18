@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: islamic-fasting-push
+    env: node
+    buildCommand: npm install
+    startCommand: node server.js
+    envVars:
+      - key: VAPID_PUBLIC
+        value: BOAaqCPlyrXIiDpWE55EWQFbao6e5jEAmDKeB91s8TUMKAXMpASUj59cIwFqGa25QSb3Q9wsed819mVkmR0Uqlw
+      - key: VAPID_PRIVATE
+        value: _r9Ik842T_VBPXzT3udxNum-yDq4IZ0iRGH6YHjJ9ms
