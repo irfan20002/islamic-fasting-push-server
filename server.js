@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const webpush = require('web-push');
 const cron = require('node-cron');
+const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
 app.use(cors());
@@ -13,7 +14,30 @@ const VAPID_PRIVATE = process.env.VAPID_PRIVATE || '_r9Ik842T_VBPXzT3udxNum-yDq4
 
 webpush.setVapidDetails('mailto:irfanbandey@gmail.com', VAPID_PUBLIC, VAPID_PRIVATE);
 
+// Supabase client
+const supabase = createClient(
+  process.env.SUPABASE_URL || 'https://hbaynzxowrcgvogafsuz.supabase.co',
+  process.env.SUPABASE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhiYXluenhvd3JjZ3ZvZ2Fmc3V6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE4NzY3MjksImV4cCI6MjA5NzQ1MjcyOX0.NCSrcu22bT_7eW8xsjQtpzMBsu7AStx0Wath7tWh9cQ'
+);
+
+// In-memory cache (populated from DB on startup)
 const subscriptions = new Map();
+
+async function loadSubscriptions() {
+  const { data, error } = await supabase.from('subscriptions').select('*');
+  if (error) { console.error('Failed to load subscriptions:', error.message); return; }
+  for (const row of data) {
+    subscriptions.set(row.id, {
+      subscription: row.subscription,
+      lat: row.lat,
+      lon: row.lon,
+      timezone: row.timezone
+    });
+  }
+  console.log(`Loaded ${subscriptions.size} subscriptions from Supabase`);
+}
+
+loadSubscriptions();
 
 // ── Routes ────────────────────────────────────────────────────────────────
 
@@ -33,19 +57,25 @@ app.get('/subscribers', (req, res) => {
   res.json({ count: list.length, subscribers: list });
 });
 
-app.post('/subscribe', (req, res) => {
+app.post('/subscribe', async (req, res) => {
   const { subscription, lat, lon, timezone } = req.body;
   if (!subscription || !subscription.endpoint) return res.status(400).json({ error: 'Invalid subscription' });
   const id = subscription.endpoint.slice(-20);
-  subscriptions.set(id, { subscription, lat: parseFloat(lat), lon: parseFloat(lon), timezone: timezone || 'America/Chicago' });
+  const record = { id, subscription, lat: parseFloat(lat), lon: parseFloat(lon), timezone: timezone || 'America/Chicago' };
+  subscriptions.set(id, { subscription, lat: record.lat, lon: record.lon, timezone: record.timezone });
+  const { error } = await supabase.from('subscriptions').upsert(record, { onConflict: 'id' });
+  if (error) console.error('Supabase upsert error:', error.message);
   console.log(`Subscribed: ${id} (${lat}, ${lon})`);
   res.json({ success: true, id });
 });
 
-app.post('/unsubscribe', (req, res) => {
+app.post('/unsubscribe', async (req, res) => {
   const { endpoint } = req.body;
   const id = endpoint?.slice(-20);
-  if (id) subscriptions.delete(id);
+  if (id) {
+    subscriptions.delete(id);
+    await supabase.from('subscriptions').delete().eq('id', id);
+  }
   res.json({ success: true });
 });
 
@@ -120,6 +150,7 @@ async function sendNotif(sub, title, body) {
     if (err.statusCode === 410 || err.statusCode === 404) {
       const id = sub.subscription.endpoint.slice(-20);
       subscriptions.delete(id);
+      await supabase.from('subscriptions').delete().eq('id', id);
       console.log(`Removed expired subscription ${id}`);
     } else {
       console.error('Push error:', err.message);
