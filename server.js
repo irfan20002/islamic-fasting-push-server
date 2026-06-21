@@ -97,12 +97,18 @@ async function getPrayerTimes(lat, lon, timezone) {
     const data = await res.json();
     if (data.code === 200) {
       const timings = data.data.timings;
-      // Convert "HH:MM" strings to today's Date objects in local timezone
+      // Convert "HH:MM" strings to today's Date objects correctly
       function toDate(str) {
         const [h, m] = str.split(':').map(Number);
-        const d = new Date(new Date().toLocaleString('en-US', { timeZone: timezone }));
-        d.setHours(h, m, 0, 0);
-        return d;
+        // Build date string in local timezone and parse it
+        const localNow = new Date(new Date().toLocaleString('en-US', { timeZone: timezone }));
+        const yyyy = localNow.getFullYear();
+        const mm2  = String(localNow.getMonth() + 1).padStart(2, '0');
+        const dd2  = String(localNow.getDate()).padStart(2, '0');
+        const hh   = String(h).padStart(2, '0');
+        const min  = String(m).padStart(2, '0');
+        // Parse as local time by using toLocaleString trick
+        return new Date(`${yyyy}-${mm2}-${dd2}T${hh}:${min}:00`);
       }
       const result = {
         Fajr:     toDate(timings.Fajr),
@@ -152,14 +158,16 @@ async function sendNotif(sub, title, body) {
 }
 
 cron.schedule('* * * * *', async () => {
-  const now = new Date();
-  const nowMin = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours(), now.getMinutes(), 0, 0);
+  const nowUTC = new Date();
+  console.log(`Cron tick: ${nowUTC.toISOString()} — ${subscriptions.size} subscribers`);
   for (const [id, sub] of subscriptions) {
     try {
       const timezone = sub.timezone || 'America/Chicago';
+      const nowLocal = new Date(nowUTC.toLocaleString('en-US', { timeZone: timezone }));
+      const nowMin = new Date(nowLocal.getFullYear(), nowLocal.getMonth(), nowLocal.getDate(), nowLocal.getHours(), nowLocal.getMinutes(), 0, 0);
       const times = await getPrayerTimes(sub.lat, sub.lon, timezone);
       if (!times) { console.error(`No prayer times for ${id}`); continue; }
-      const { fasting } = isFastingDay(now);
+      const { fasting } = isFastingDay(nowLocal);
       function isNow(t, offsetMins = 0) {
         if (!t) return false;
         const target = new Date(t.getTime() + offsetMins * 60000);
