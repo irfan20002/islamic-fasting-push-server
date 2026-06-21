@@ -79,57 +79,50 @@ app.post('/unsubscribe', async (req, res) => {
   res.json({ success: true });
 });
 
-// ── Prayer time calculation ───────────────────────────────────────────────
+// ── Prayer time fetching via Al-Adhan API ────────────────────────────────
 
-function toRad(d) { return d * Math.PI / 180; }
-function toDeg(r) { return r * 180 / Math.PI; }
+const prayerCache = new Map(); // key: "lat_lon_date" → timings object
 
-function calcPrayerTimes(lat, lon, date) {
-  const JD = Math.floor(365.25 * (date.getFullYear() + 4716)) +
-             Math.floor(30.6001 * (date.getMonth() + 2)) +
-             date.getDate() - 1524.5;
-  const D = JD - 2451545.0;
-  const g = toRad((357.529 + 0.98560028 * D) % 360);
-  const q = (280.459 + 0.98564736 * D) % 360;
-  const L = toRad((q + 1.915 * Math.sin(g) + 0.020 * Math.sin(2 * g)) % 360);
-  const e = toRad(23.439 - 0.00000036 * D);
-  const RA = toDeg(Math.atan2(Math.cos(e) * Math.sin(L), Math.cos(L))) / 15;
-  const EqT = q / 15 - ((RA + 360) % 24);
-  const decl = Math.asin(Math.sin(e) * Math.sin(L));
-  const noon = 12 - EqT - lon / 15;
-  function hourAngle(alt) {
-    const cosH = (Math.sin(toRad(alt)) - Math.sin(toRad(lat)) * Math.sin(decl)) /
-                 (Math.cos(toRad(lat)) * Math.cos(decl));
-    if (cosH > 1 || cosH < -1) return 0;
-    return toDeg(Math.acos(cosH)) / 15;
+async function getPrayerTimes(lat, lon, timezone) {
+  const now = new Date(new Date().toLocaleString('en-US', { timeZone: timezone }));
+  const dd  = String(now.getDate()).padStart(2, '0');
+  const mm  = String(now.getMonth() + 1).padStart(2, '0');
+  const yyyy = now.getFullYear();
+  const key = `${Math.round(lat*100)}_${Math.round(lon*100)}_${dd}${mm}${yyyy}`;
+
+  if (prayerCache.has(key)) return prayerCache.get(key);
+
+  try {
+    const res = await fetch(`https://api.aladhan.com/v1/timings/${dd}-${mm}-${yyyy}?latitude=${lat}&longitude=${lon}&method=2`);
+    const data = await res.json();
+    if (data.code === 200) {
+      const timings = data.data.timings;
+      // Convert "HH:MM" strings to today's Date objects in local timezone
+      function toDate(str) {
+        const [h, m] = str.split(':').map(Number);
+        const d = new Date(new Date().toLocaleString('en-US', { timeZone: timezone }));
+        d.setHours(h, m, 0, 0);
+        return d;
+      }
+      const result = {
+        Fajr:     toDate(timings.Fajr),
+        Sunrise:  toDate(timings.Sunrise),
+        Ishraq:   new Date(toDate(timings.Sunrise).getTime() + 25 * 60000),
+        Dhuhr:    toDate(timings.Dhuhr),
+        Asr:      toDate(timings.Asr),
+        Maghrib:  toDate(timings.Maghrib),
+        Isha:     toDate(timings.Isha),
+        Midnight: toDate(timings.Midnight),
+      };
+      prayerCache.set(key, result);
+      // Clear cache at midnight
+      setTimeout(() => prayerCache.delete(key), 24 * 60 * 60 * 1000);
+      return result;
+    }
+  } catch (err) {
+    console.error('Prayer API error:', err.message);
   }
-  const asrAlt = toDeg(Math.atan(1 / (1 + Math.tan(Math.abs(toRad(lat) - decl)))));
-  const fajrHA    = hourAngle(-18);
-  const sunriseHA = hourAngle(-0.833);
-  const asrHA     = hourAngle(asrAlt);
-  const maghribHA = sunriseHA;
-  const ishaHA    = hourAngle(-17);
-  function toDate(h) {
-    const d = new Date(date);
-    d.setHours(0, 0, 0, 0);
-    d.setMinutes(Math.round(h * 60));
-    return d;
-  }
-  const sunrise = noon - sunriseHA;
-  const ishraqStart = sunrise + 25/60;
-  const midnight = noon + 12;
-  const lastThird = (midnight + (noon - fajrHA + 24)) / 2;
-  return {
-    Fajr:     toDate(noon - fajrHA),
-    Sunrise:  toDate(sunrise),
-    Ishraq:   toDate(ishraqStart),
-    Dhuhr:    toDate(noon),
-    Asr:      toDate(noon + asrHA),
-    Maghrib:  toDate(noon + maghribHA),
-    Isha:     toDate(noon + ishaHA),
-    Tahajjud: toDate(lastThird - 15/60),
-    Midnight: toDate(midnight),
-  };
+  return null;
 }
 
 function isFastingDay(date) {
@@ -163,8 +156,10 @@ cron.schedule('* * * * *', async () => {
   const nowMin = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours(), now.getMinutes(), 0, 0);
   for (const [id, sub] of subscriptions) {
     try {
-      const times = calcPrayerTimes(sub.lat, sub.lon, now);
-      const { fasting, name: fastName } = isFastingDay(now);
+      const timezone = sub.timezone || 'America/Chicago';
+      const times = await getPrayerTimes(sub.lat, sub.lon, timezone);
+      if (!times) { console.error(`No prayer times for ${id}`); continue; }
+      const { fasting } = isFastingDay(now);
       function isNow(t, offsetMins = 0) {
         if (!t) return false;
         const target = new Date(t.getTime() + offsetMins * 60000);
@@ -186,8 +181,6 @@ cron.schedule('* * * * *', async () => {
                   : `Maghrib at ${times.Maghrib.toLocaleTimeString('en-US', {hour:'numeric',minute:'2-digit'})}.`);
       if (isNow(times.Isha, -15))
         await sendNotif(sub, '🌙 Isha in 15 minutes', `Isha at ${times.Isha.toLocaleTimeString('en-US', {hour:'numeric',minute:'2-digit'})}.`);
-      if (isNow(times.Tahajjud))
-        await sendNotif(sub, '🌙 Last third of night in 15 minutes', `Pray Tahajjud starting ${new Date(times.Tahajjud.getTime() + 15*60000).toLocaleTimeString('en-US', {hour:'numeric',minute:'2-digit'})}.`);
     } catch (err) {
       console.error(`Error processing sub ${id}:`, err.message);
     }
