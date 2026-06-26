@@ -137,6 +137,64 @@ function isFastingDay(date) {
   return { fasting: false };
 }
 
+// ── Hijri date calculation ────────────────────────────────────────────────
+function toJD(y, m, d) {
+  return Math.floor((1461*(y+4800+Math.floor((m-14)/12)))/4)
+       + Math.floor((367*(m-2-12*Math.floor((m-14)/12)))/12)
+       - Math.floor((3*Math.floor((y+4900+Math.floor((m-14)/12))/100))/4)
+       + d - 32075;
+}
+function hijriToJD(hy, hm, hd) {
+  return Math.floor((11*hy+3)/30) + 354*hy + 30*hm
+       - Math.floor((hm-1)/2) + hd + 1948440 - 385;
+}
+function jdToHijri(jd) {
+  const z = Math.floor(jd) + 0.5;
+  const a = Math.floor((z-1948440+385)/10631);
+  const b = z - Math.floor((11*a+3)/30) - 354*a - 30 + 385 - 1948440 + 385;
+  const j = Math.floor((b-1)/29.5);
+  return { year: a, month: j+1, day: Math.floor(b - 29.5*j) };
+}
+function gToH(date) {
+  return jdToHijri(toJD(date.getFullYear(), date.getMonth()+1, date.getDate()));
+}
+function hToG(hy, hm, hd) {
+  const jd = hijriToJD(hy, hm, hd);
+  const l = jd + 68569;
+  const n = Math.floor(4*l/146097);
+  const ll = l - Math.floor((146097*n+3)/4);
+  const i = Math.floor(4000*(ll+1)/1461001);
+  const lll = ll - Math.floor(1461*i/4) + 31;
+  const j = Math.floor(80*lll/2447);
+  const d = lll - Math.floor(2447*j/80);
+  const m = j + 2 - 12*Math.floor(j/11);
+  const y = 100*(n-49) + i + Math.floor(j/11);
+  return new Date(y, m-1, d);
+}
+
+// Check if a given Gregorian date is a named Hijri fast day
+function isNamedHijriFast(date) {
+  const h = gToH(date);
+  const hm = h.month, hd = h.day;
+  // Ashura (10 Muharram) and surrounding
+  if (hm === 1 && (hd === 9 || hd === 10 || hd === 11)) return { fasting: true, name: hd === 9 ? 'Tasua' : hd === 10 ? 'Ashura' : '11 Muharram fast' };
+  // Ayyam al-Beed (13, 14, 15 of each month except Ramadan)
+  if (hm !== 9 && (hd === 13 || hd === 14 || hd === 15)) return { fasting: true, name: `Ayyam al-Beed` };
+  // Day of Arafah (9 Dhul Hijjah)
+  if (hm === 12 && hd === 9) return { fasting: true, name: 'Day of Arafah' };
+  // 6 days of Shawwal (2-7 Shawwal)
+  if (hm === 10 && hd >= 2 && hd <= 7) return { fasting: true, name: '6 days of Shawwal' };
+  return { fasting: false };
+}
+
+function isTomorrowFasting(timezone) {
+  const tomorrow = new Date(new Date().toLocaleString('en-US', { timeZone: timezone }));
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const dow = tomorrow.getDay();
+  if (dow === 1 || dow === 4) return { fasting: true, name: dow === 1 ? 'Monday fast' : 'Thursday fast' };
+  return isNamedHijriFast(tomorrow);
+}
+
 async function sendNotif(sub, title, body) {
   try {
     await webpush.sendNotification(sub.subscription, JSON.stringify({
@@ -189,6 +247,14 @@ cron.schedule('* * * * *', async () => {
                   : `Maghrib at ${times.Maghrib.toLocaleTimeString('en-US', {hour:'numeric',minute:'2-digit'})}.`);
       if (isNow(times.Isha, -15))
         await sendNotif(sub, '🌙 Isha in 15 minutes', `Isha at ${times.Isha.toLocaleTimeString('en-US', {hour:'numeric',minute:'2-digit'})}.`);
+      // ── Eve reminder: 30 minutes after Maghrib if tomorrow is a fasting day ──
+      if (isNow(times.Maghrib, 30)) {
+        const tomorrow = isTomorrowFasting(timezone);
+        if (tomorrow.fasting) {
+          await sendNotif(sub, '🌙 Fast tomorrow',
+            `Tomorrow is ${tomorrow.name}. Make your intention tonight. May Allah accept it.`);
+        }
+      }
     } catch (err) {
       console.error(`Error processing sub ${id}:`, err.message);
     }
