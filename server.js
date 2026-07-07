@@ -79,6 +79,31 @@ app.post('/unsubscribe', async (req, res) => {
   res.json({ success: true });
 });
 
+// ── Notify every subscriber that a new version has been deployed ─────────
+// Called automatically by a GitHub Action on every push to main (see the
+// deploy-notify.yml workflow in the app's repo), so this never needs to be
+// triggered by hand. Protected by a shared secret so randoms can't spam
+// every user's phone with a fake "update available" push.
+app.post('/notify-update', async (req, res) => {
+  const secret = req.headers['x-admin-secret'];
+  if (!secret || secret !== process.env.ADMIN_SECRET) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  const title = req.body?.title || '🔄 App updated';
+  const body  = req.body?.body  || 'A new version is ready. Please force-quit and reopen the app to get it.';
+  let sent = 0, failed = 0;
+  for (const [, sub] of subscriptions) {
+    try {
+      await sendNotif(sub, title, body);
+      sent++;
+    } catch (err) {
+      failed++;
+    }
+  }
+  console.log(`notify-update: sent to ${sent} subscribers, ${failed} failed`);
+  res.json({ success: true, sent, failed, total: subscriptions.size });
+});
+
 // ── Prayer time fetching via Al-Adhan API ────────────────────────────────
 
 const prayerCache = new Map(); // key: "lat_lon_date" → timings object
