@@ -8,16 +8,27 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// VAPID keys
-const VAPID_PUBLIC  = process.env.VAPID_PUBLIC  || 'BOAaqCPlyrXIiDpWE55EWQFbao6e5jEAmDKeB91s8TUMKAXMpASUj59cIwFqGa25QSb3Q9wsed819mVkmR0Uqlw';
-const VAPID_PRIVATE = process.env.VAPID_PRIVATE || '_r9Ik842T_VBPXzT3udxNum-yDq4IZ0iRGH6YHjJ9ms';
+// ── Required environment variables ──────────────────────────────────────
+// No hardcoded fallbacks: this file is public on GitHub, so any secret with
+// a literal fallback here is a leaked secret. Set these in Render's
+// Environment tab. The server refuses to start if any are missing.
+const required = ['VAPID_PUBLIC', 'VAPID_PRIVATE', 'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'ADMIN_SECRET'];
+const missing = required.filter(k => !process.env[k]);
+if (missing.length) {
+  console.error(`Missing required env vars: ${missing.join(', ')}`);
+  process.exit(1);
+}
+
+const VAPID_PUBLIC  = process.env.VAPID_PUBLIC;
+const VAPID_PRIVATE = process.env.VAPID_PRIVATE;
 
 webpush.setVapidDetails('mailto:irfanbandey@gmail.com', VAPID_PUBLIC, VAPID_PRIVATE);
 
-// Supabase client
+// Supabase client — uses the SERVICE ROLE key (server-side only, bypasses
+// RLS by design). Never use the anon key here, and never commit this key.
 const supabase = createClient(
-  process.env.SUPABASE_URL || 'https://hbaynzxowrcgvogafsuz.supabase.co',
-  process.env.SUPABASE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhiYXluenhvd3JjZ3ZvZ2Fmc3V6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE4NzY3MjksImV4cCI6MjA5NzQ1MjcyOX0.NCSrcu22bT_7eW8xsjQtpzMBsu7AStx0Wath7tWh9cQ'
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
 // In-memory cache (populated from DB on startup)
